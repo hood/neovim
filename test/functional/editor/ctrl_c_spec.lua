@@ -59,6 +59,40 @@ describe('CTRL-C (mapped)', function()
     end
   end)
 
+  it('interrupts :substitute', function()
+    if t.skip_fragile(t.pending) then
+      return
+    end
+
+    source([[
+      set nomore nohlsearch undolevels=-1 regexpengine=2
+      nnoremap <C-C> <NOP>
+    ]])
+    n.exec_lua(function()
+      vim.api.nvim_buf_set_lines(0, 0, -1, false, vim.fn['repeat']({ ('foo bar '):rep(6) }, 300000))
+    end)
+
+    local function test_ctrl_c(ms)
+      feed([[:%s/\v(\w+) (\w+)/\2 \1/g<CR>]])
+      screen:sleep(ms)
+      feed('<C-C>')
+      screen:expect { any = 'Interrupted' }
+    end
+
+    -- The test is time-sensitive. Try different sleep values.
+    local ms_values = { 100, 1000 }
+    for i, ms in ipairs(ms_values) do
+      if i < #ms_values then
+        local status, _ = pcall(test_ctrl_c, ms)
+        if status then
+          break
+        end
+      else -- Call the last attempt directly.
+        test_ctrl_c(ms)
+      end
+    end
+  end)
+
   it('interrupts :sleep', function()
     command('nnoremap <C-C> <Nop>')
     feed(':sleep 100<CR>')

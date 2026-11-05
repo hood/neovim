@@ -216,7 +216,24 @@ void os_breakcheck(void)
 }
 
 #define BREAKCHECK_SKIP 1000
+/// Minimum time between two polls done by the throttled breakchecks. Polling
+/// the event loop costs a syscall (~1-20us); a shared call counter alone does
+/// not bound how often that happens, since all callers bump the same counter.
+#define BREAKCHECK_INTERVAL_NS (10 * 1000 * 1000)
 static int breakcheck_count = 0;
+static uint64_t breakcheck_last = 0;
+
+/// Calls os_breakcheck() if at least BREAKCHECK_INTERVAL_NS passed since the
+/// last throttled check.
+static void throttled_breakcheck(void)
+{
+  breakcheck_count = 0;
+  uint64_t now = os_hrtime();
+  if (now - breakcheck_last >= BREAKCHECK_INTERVAL_NS) {
+    breakcheck_last = now;
+    os_breakcheck();
+  }
+}
 
 /// Check for CTRL-C pressed, but only once in a while.
 ///
@@ -226,8 +243,7 @@ static int breakcheck_count = 0;
 void line_breakcheck(void)
 {
   if (++breakcheck_count >= BREAKCHECK_SKIP) {
-    breakcheck_count = 0;
-    os_breakcheck();
+    throttled_breakcheck();
   }
 }
 
@@ -235,8 +251,7 @@ void line_breakcheck(void)
 void fast_breakcheck(void)
 {
   if (++breakcheck_count >= BREAKCHECK_SKIP * 10) {
-    breakcheck_count = 0;
-    os_breakcheck();
+    throttled_breakcheck();
   }
 }
 
@@ -244,8 +259,7 @@ void fast_breakcheck(void)
 void veryfast_breakcheck(void)
 {
   if (++breakcheck_count >= BREAKCHECK_SKIP * 100) {
-    breakcheck_count = 0;
-    os_breakcheck();
+    throttled_breakcheck();
   }
 }
 
