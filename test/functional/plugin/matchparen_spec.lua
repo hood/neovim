@@ -59,4 +59,24 @@ describe('matchparen', function()
       end, win)
     )
   end)
+
+  it('searches once per key when the key also scrolls', function()
+    api.nvim_buf_set_lines(0, 0, -1, false, vim.fn['repeat']({ '(x)' }, 30))
+    n.exec_lua(function()
+      _G.searches = 0
+      local searchpairpos = vim.fn.searchpairpos
+      ---@diagnostic disable-next-line: duplicate-set-field
+      vim.fn.searchpairpos = function(...)
+        _G.searches = _G.searches + 1
+        return searchpairpos(...)
+      end
+    end)
+    -- Each "j" past the window bottom triggers CursorMoved and WinScrolled.
+    for _ = 1, 10 do
+      feed('j')
+      n.poke_eventloop()
+    end
+    eq(10, n.exec_lua('return _G.searches'))
+    eq('MatchParen', n.fn.getmatches()[1].group)
+  end)
 end)

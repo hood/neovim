@@ -6,6 +6,33 @@ local M = {}
 
 local skip_names = { 'string', 'character', 'singlequote', 'escape', 'symbol', 'comment' }
 
+--- Inputs of the last highlight_matching_pair() per window. When they don't
+--- change, e.g. CursorMoved and WinScrolled for the same key, the existing
+--- highlight is kept.
+---@type table<integer, string>
+local last_inputs = {}
+
+---@type table<string, { plist: string[], index: table<string, integer> }>
+local matchpairs_cache = {}
+
+--- Parses 'matchpairs' into the list of characters and the index of each.
+---@param mps string
+---@return string[] plist
+---@return table<string, integer> index
+local function parse_matchpairs(mps)
+  local parsed = matchpairs_cache[mps]
+  if parsed == nil then
+    local plist = vim.split(mps, '[:,]', { trimempty = true })
+    local index = {} ---@type table<string, integer>
+    for i, item in ipairs(plist) do
+      index[item] = index[item] or i
+    end
+    parsed = { plist = plist, index = index }
+    matchpairs_cache[mps] = parsed
+  end
+  return parsed.plist, parsed.index
+end
+
 ---@param text string
 ---@param byte_col integer
 ---@return string
@@ -78,16 +105,11 @@ function M.highlight_matching_pair(win)
   if vim.w[win].matchparen_ids == nil then
     vim.w[win].matchparen_ids = {}
   end
-  -- Remove any previous match.
-  M.remove_matches(win)
-
-  -- Avoid that we remove the popup menu.
-  if fn.pumvisible() ~= 0 then
-    return
-  end
 
   -- Get the character under the cursor and check if it's in 'matchpairs'.
   local cursor = api.nvim_win_get_cursor(win)
+  local mode = api.nvim_get_mode().mode
+  local mps = vim.bo[buf].matchpairs
   local c_lnum = cursor[1]
   local c_col = cursor[2] + 1
   local before = 0
@@ -98,27 +120,49 @@ function M.highlight_matching_pair(win)
   -- Use UTF-8 boundaries to extract the whole character around the byte column.
   local c_before = char_before(text, c_col)
   local c = char_at(text, c_col)
-  ---@type string[]
-  local plist = vim.split(vim.bo[buf].matchpairs, '[:,]', { trimempty = true })
-  ---@type integer?
-  local i = vim.iter(ipairs(plist)):find(function(_, item)
-    return item == c
-  end)
+  local plist, index = parse_matchpairs(mps)
+  local i = index[c] ---@type integer?
   if i == nil then
     -- not found, in Insert mode try character before the cursor
-    local mode = api.nvim_get_mode().mode
     if c_col > 1 and (mode == 'i' or mode == 'R') then
       before = #c_before
       c = c_before
-      i = vim.iter(ipairs(plist)):find(function(_, item)
-        return item == c
-      end)
+      i = index[c]
     end
     if i == nil then
       -- not found, nothing to do
+      M.remove_matches(win)
       return
     end
   end
+
+  -- The match is searched in the lines visible in the window.
+  ---@type integer, integer
+  local stoplinetop, stoplinebottom = fn.line('w0', win), fn.line('w$', win)
+  local pumvisible = fn.pumvisible()
+  local inputs = table.concat({
+    buf,
+    api.nvim_buf_get_changedtick(buf),
+    c_lnum,
+    c_col,
+    stoplinetop,
+    stoplinebottom,
+    mode,
+    mps,
+    pumvisible,
+  }, ' ')
+  if last_inputs[win] == inputs then
+    return
+  end
+
+  -- Remove any previous match.
+  M.remove_matches(win)
+
+  -- Avoid that we remove the popup menu.
+  if pumvisible ~= 0 then
+    return
+  end
+  last_inputs[win] = inputs
 
   -- Figure out the arguments for searchpairpos().
   local flags ---@type string
@@ -214,10 +258,6 @@ function M.highlight_matching_pair(win)
   end
 
   -- Limit the search to lines visible in the window.
-  ---@type integer, integer
-  local stoplinetop, stoplinebottom = unpack(api.nvim_win_call(win, function()
-    return { fn.line('w0'), fn.line('w$') }
-  end))
   local stopline ---@type integer
   if i % 2 == 1 then
     stopline = stoplinebottom
@@ -227,7 +267,6 @@ function M.highlight_matching_pair(win)
 
   -- Limit the search time to 300 msec to avoid a hang on very long lines.
   local timeout ---@type integer
-  local mode = api.nvim_get_mode().mode
   if mode == 'i' or mode == 'R' then
     timeout = vim.b[buf].matchparen_insert_timeout or vim.g.matchparen_insert_timeout
   else
@@ -239,6 +278,7 @@ function M.highlight_matching_pair(win)
     return fn.searchpairpos(c, '', c2, flags, skip, stopline, timeout)
   end)
   if not ok then ---@cast match string
+    last_inputs[win] = nil
     if save_cursor ~= nil then
       api.nvim_win_call(win, function()
         fn.setpos('.', save_cursor)
@@ -283,6 +323,7 @@ end
 ---@param win? integer
 function M.remove_matches(win)
   win = win or api.nvim_get_current_win()
+  last_inputs[win] = nil
 
   if vim.w[win].paren_hl_on ~= nil and vim.w[win].paren_hl_on ~= 0 then
     local ids = vim.w[win].matchparen_ids or {}
