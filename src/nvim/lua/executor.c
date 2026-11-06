@@ -1593,7 +1593,7 @@ static void nlua_exec_typval_fmt(const char *fmt, const char *body, size_t bodyl
     vim_snprintf(lcmd, (size_t)lcmd_len + 1, fmt, (int)bodylen, body);
   }
 
-  nlua_exec_typval(lcmd, (size_t)lcmd_len, name, args, argcount, special, ret_tv);
+  nlua_exec_typval(lcmd, (size_t)lcmd_len, name, args, argcount, special, true, ret_tv);
 
   if (lcmd != lcmd_buf) {
     xfree(lcmd);
@@ -1635,9 +1635,62 @@ void nlua_call_user_expand_func(expand_T *xp, typval_T *ret_tv)
   nlua_pop_typval(lstate, ret_tv);
 }
 
+/// Max number of chunks kept by nlua_loadbuffer_cached(). When exceeded, the
+/// cache is emptied, so that one-off chunks (e.g. luaeval() of a built string)
+/// can't grow it without bound.
+#define CHUNK_CACHE_MAX 256
+#define CHUNK_CACHE_KEY "nvim.chunk_cache"
+static int chunk_cache_count = 0;
+
+/// Like luaL_loadbuffer(), but reuses the chunk compiled for the same `lcmd`.
+///
+/// @return 0 and the chunk pushed on the stack, or luaL_loadbuffer() error and
+///         the error message pushed.
+static int nlua_loadbuffer_cached(lua_State *lstate, const char *lcmd, size_t lcmd_len,
+                                  const char *name)
+{
+  lua_getfield(lstate, LUA_REGISTRYINDEX, CHUNK_CACHE_KEY);  // [cache]
+  if (!lua_istable(lstate, -1)) {
+    lua_pop(lstate, 1);
+    lua_newtable(lstate);
+    lua_pushvalue(lstate, -1);
+    lua_setfield(lstate, LUA_REGISTRYINDEX, CHUNK_CACHE_KEY);
+    chunk_cache_count = 0;
+  }
+  lua_pushlstring(lstate, lcmd, lcmd_len);
+  lua_rawget(lstate, -2);  // [cache, chunk|nil]
+  if (!lua_isnil(lstate, -1)) {
+    lua_remove(lstate, -2);  // [chunk]
+    return 0;
+  }
+  lua_pop(lstate, 1);  // [cache]
+
+  int err = luaL_loadbuffer(lstate, lcmd, lcmd_len, name);  // [cache, chunk|errmsg]
+  if (err) {
+    lua_remove(lstate, -2);  // [errmsg]
+    return err;
+  }
+  if (++chunk_cache_count > CHUNK_CACHE_MAX) {
+    lua_newtable(lstate);  // [cache, chunk, new]
+    lua_replace(lstate, -3);  // [new, chunk]
+    lua_pushvalue(lstate, -2);
+    lua_setfield(lstate, LUA_REGISTRYINDEX, CHUNK_CACHE_KEY);
+    chunk_cache_count = 1;
+  }
+  lua_pushlstring(lstate, lcmd, lcmd_len);
+  lua_pushvalue(lstate, -2);  // [cache, chunk, lcmd, chunk]
+  lua_rawset(lstate, -4);  // [cache, chunk]
+  lua_remove(lstate, -2);  // [chunk]
+  return 0;
+}
+
 /// Executes a Lua chunk with typval arguments and optional typval return.
+///
+/// @param cache  Reuse the compiled chunk on later calls with the same `lcmd`.
+///               For code run repeatedly (luaeval(), v:lua), not one-off code (:lua).
 static void nlua_exec_typval(const char *lcmd, size_t lcmd_len, const char *name,
-                             typval_T *const args, int argcount, bool special, typval_T *ret_tv)
+                             typval_T *const args, int argcount, bool special, bool cache,
+                             typval_T *ret_tv)
 {
   if (check_secure()) {
     if (ret_tv) {
@@ -1650,10 +1703,8 @@ static void nlua_exec_typval(const char *lcmd, size_t lcmd_len, const char *name
   lua_State *const lstate = global_lstate;
 
   // 1. Compile lcmd into a Lua chunk (function), push it on the stack.
-  //
-  // TODO(justinmk): Cache the chunk in LUA_REGISTRYINDEX? But one-off callers (:lua, luaeval) may
-  // bloat the cache. Could add a `cache:boolean` param.
-  if (luaL_loadbuffer(lstate, lcmd, lcmd_len, name)) {
+  if (cache ? nlua_loadbuffer_cached(lstate, lcmd, lcmd_len, name)
+            : luaL_loadbuffer(lstate, lcmd, lcmd_len, name)) {
     nlua_error(lstate, _("E5107: Lua: %.*s"));
     return;
   }
@@ -1677,7 +1728,7 @@ void nlua_exec_ga(garray_T *ga, char *name)
 {
   char *code = ga_concat_strings(ga, "\n");
   size_t len = strlen(code);
-  nlua_exec_typval(code, len, name, NULL, 0, false, NULL);
+  nlua_exec_typval(code, len, name, NULL, 0, false, false, NULL);
   xfree(code);
 }
 
@@ -1765,7 +1816,7 @@ void nlua_call_typval(const char *module, const char *func, typval_T *argvars, t
   char buf[256];
   snprintf(buf, sizeof(buf), "return require('%s').%s(...)", module, func);
 
-  nlua_exec_typval(buf, strlen(buf), module, argvars, argcount, false, rettv);
+  nlua_exec_typval(buf, strlen(buf), module, argvars, argcount, false, true, rettv);
 }
 
 /// Calls Lua to implement an excmd. Passes `eap` + `cmdmod` to Lua as a dict arg, which is arranged
@@ -1970,7 +2021,7 @@ void ex_lua(exarg_T *const eap)
     code = code_buf;
   }
 
-  nlua_exec_typval(code, len, ":lua", NULL, 0, false, NULL);
+  nlua_exec_typval(code, len, ":lua", NULL, 0, false, false, NULL);
 
   xfree(code);
 }

@@ -521,6 +521,29 @@ describe('luaeval()', function()
     )
     eq(s, fn.luaeval('"' .. s .. '"'))
   end)
+
+  it('reuses compiled chunks', function()
+    exec_lua('_G.n = 0')
+    -- Same chunk: each call still runs it, with its own _A.
+    eq(
+      { 1, 2, 3 },
+      eval([[map([1, 2, 3], 'luaeval("(function() n = n + 1 return _A end)()", v:val)')]])
+    )
+    eq(3, exec_lua('return _G.n'))
+    eq(
+      'Vim:E5108: Lua: [string "luaeval()"]:0: E',
+      remove_trace(pcall_err(eval, [[luaeval("error('E')")]]))
+    )
+    eq(
+      'Vim:E5108: Lua: [string "luaeval()"]:0: E',
+      remove_trace(pcall_err(eval, [[luaeval("error('E')")]]))
+    )
+    -- More chunks than the cache keeps.
+    eq(
+      vim.fn.range(1000),
+      eval([[map(range(1000), 'luaeval(v:val .. " + 0") + luaeval("0 * _A", v:val)')]])
+    )
+  end)
 end)
 
 describe('v:lua', function()
