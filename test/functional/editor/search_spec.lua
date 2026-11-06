@@ -13,6 +13,50 @@ local pcall_err = t.pcall_err
 describe('search (/)', function()
   before_each(clear)
 
+  it('search count with n and N across maxsearchcount', function()
+    eq(
+      {
+        -- n
+        '[2/>5]',
+        '[3/>5]',
+        '[4/>5]',
+        '[5/>5]',
+        '[>5/>5]',
+        '[>5/>5]',
+        '[>5/>5]',
+        -- N
+        '[>5/>5]',
+        '[>5/>5]',
+        '[5/>5]',
+        '[4/>5]',
+        '[3/>5]',
+        -- G n n
+        '[1/>5]',
+        '[2/>5]',
+      },
+      n.exec_lua(function()
+        local counts = {} ---@type string[]
+        local ns = vim.api.nvim_create_namespace('test')
+        vim.ui_attach(ns, { ext_messages = true }, function(event, kind, content)
+          if event == 'msg_show' and kind == 'search_count' then
+            counts[#counts + 1] = vim.trim(content[#content][2]):match('%[.*%]')
+          end
+        end)
+        vim.o.maxsearchcount = 5
+        vim.opt.shortmess:remove('S')
+        vim.api.nvim_buf_set_lines(0, 0, -1, false, vim.fn['repeat']({ 'x' }, 12))
+        local keys =
+          { '/x<CR>', 'n', 'n', 'n', 'n', 'n', 'n', 'N', 'N', 'N', 'N', 'N', 'G', 'n', 'n' }
+        for _, k in ipairs(keys) do
+          vim.api.nvim_feedkeys(vim.keycode(k), 'xt', false)
+          vim.cmd.redraw()
+        end
+        vim.ui_detach(ns)
+        return counts
+      end)
+    )
+  end)
+
   it('fails with huge column (%c) value #9930', function()
     eq([[Vim:E951: \% value too large]], pcall_err(command, '/\\v%18446744071562067968c'))
     eq([[Vim:E951: \% value too large]], pcall_err(command, '/\\v%2147483648c'))

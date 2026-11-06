@@ -2751,18 +2751,23 @@ static void update_search_stat(int dirc, pos_T *pos, pos_T *cursor_pos, searchst
     stat->last_maxcount = last_maxcount;
     return;
   }
+  const bool same_maxcount = last_maxcount == maxcount;
   last_maxcount = maxcount;
   wraparound = ((dirc == '?' && lt(lastpos, p))
                 || (dirc == '/' && lt(p, lastpos)));
+  const bool unchanged = chgtick == buf_get_changedtick(curbuf)
+                         && (lastpat != NULL  // suppress clang/NULL passed as nonnull parameter
+                             && strncmp(lastpat, spats[last_idx].pat, lastpatlen) == 0
+                             && lastpatlen == spats[last_idx].patlen)
+                         && equalpos(lastpos, *cursor_pos)
+                         && lbuf == curbuf;
+  // Moving forward from beyond "maxcount" matches stays beyond, no need to
+  // count again from the start of the buffer.
+  const bool stay_beyond = unchanged && !wraparound && !recompute && dirc == '/'
+                           && same_maxcount && maxcount > 0 && cur > maxcount;
 
   // If anything relevant changed the count has to be recomputed.
-  if (!(chgtick == buf_get_changedtick(curbuf)
-        && (lastpat != NULL  // suppress clang/NULL passed as nonnull parameter
-            && strncmp(lastpat, spats[last_idx].pat, lastpatlen) == 0
-            && lastpatlen == spats[last_idx].patlen)
-        && equalpos(lastpos, *cursor_pos)
-        && lbuf == curbuf)
-      || wraparound || cur < 0 || (maxcount > 0 && cur > maxcount)
+  if (!unchanged || wraparound || cur < 0 || (maxcount > 0 && cur > maxcount && !stay_beyond)
       || recompute) {
     cur = 0;
     cnt = 0;
@@ -2774,9 +2779,12 @@ static void update_search_stat(int dirc, pos_T *pos, pos_T *cursor_pos, searchst
 
   // when searching backwards and having jumped to the first occurrence,
   // cur must remain greater than 1
-  if (equalpos(lastpos, *cursor_pos) && !wraparound
-      && (dirc == 0 || dirc == '/' ? cur < cnt : cur > 1)) {
+  if (stay_beyond) {
+    lastpos = p;
+  } else if (equalpos(lastpos, *cursor_pos) && !wraparound
+             && (dirc == 0 || dirc == '/' ? cur < cnt : cur > 1)) {
     cur += dirc == 0 ? 0 : dirc == '/' ? 1 : -1;
+    lastpos = p;
   } else {
     proftime_T start;
     bool done_search = false;
