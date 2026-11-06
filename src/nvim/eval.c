@@ -5863,24 +5863,67 @@ static bool tv_is_luafunc(typval_T *tv)
   return tv->v_type == VAR_PARTIAL && is_luafunc(tv->vval.v_partial);
 }
 
-/// Skips one character past the end of the name of a v:lua function.
+/// Skips a "('literal')" or ("literal") call argument made of name characters.
+///
+/// @return Pointer to the char after ")", or NULL if "p" doesn't start with one.
+static const char *skip_luafunc_literal_arg(const char *p)
+  FUNC_ATTR_NONNULL_ALL FUNC_ATTR_PURE FUNC_ATTR_WARN_UNUSED_RESULT
+{
+  if (p[0] != '(' || (p[1] != '\'' && p[1] != '"')) {
+    return NULL;
+  }
+  const char quote = p[1];
+  const char *s = p + 2;
+  while (ASCII_ISALNUM(*s) || *s == '_' || *s == '-' || *s == '.' || *s == '/') {
+    s++;
+  }
+  return (s > p + 2 && s[0] == quote && s[1] == ')') ? s + 2 : NULL;
+}
+
+/// Skips past the name of a v:lua function, including literal call arguments
+/// followed by "." if the name then ends at "term".
+///
+/// This makes "v:lua.require('mod').func()" call "require('mod').func" in Lua,
+/// like "v:lua.require'mod'.func()", instead of converting the whole module to
+/// a Dict only to look up "func". In "v:lua.func('a').key" the name is "func",
+/// so the result of func('a') is indexed.
+static const char *skip_luafunc_name_term(const char *p, char term)
+  FUNC_ATTR_NONNULL_ALL FUNC_ATTR_PURE FUNC_ATTR_WARN_UNUSED_RESULT
+{
+  const char *plain_end = NULL;  // end of the name without literal arguments
+  while (true) {
+    while (ASCII_ISALNUM(*p) || *p == '_' || *p == '-' || *p == '.' || *p == '\'') {
+      p++;
+    }
+    const char *arg_end = skip_luafunc_literal_arg(p);
+    if (arg_end == NULL || *arg_end != '.') {
+      break;
+    }
+    if (plain_end == NULL) {
+      plain_end = p;
+    }
+    p = arg_end;
+  }
+  return (plain_end == NULL || *p == term) ? p : plain_end;
+}
+
+/// Skips one character past the end of the name of a v:lua function that is
+/// called, see skip_luafunc_name_term().
 /// @param p  Pointer to the char AFTER the "v:lua." prefix.
 /// @return Pointer to the char one past the end of the function's name.
 const char *skip_luafunc_name(const char *p)
   FUNC_ATTR_NONNULL_ALL FUNC_ATTR_PURE FUNC_ATTR_WARN_UNUSED_RESULT
 {
-  while (ASCII_ISALNUM(*p) || *p == '_' || *p == '-' || *p == '.' || *p == '\'') {
-    p++;
-  }
-  return p;
+  return skip_luafunc_name_term(p, '(');
 }
 
 /// check the function name after "v:lua."
 int check_luafunc_name(const char *const str, const bool paren)
   FUNC_ATTR_NONNULL_ALL FUNC_ATTR_PURE FUNC_ATTR_WARN_UNUSED_RESULT
 {
-  const char *const p = skip_luafunc_name(str);
-  if (*p != (paren ? '(' : NUL)) {
+  const char term = paren ? '(' : NUL;
+  const char *const p = skip_luafunc_name_term(str, term);
+  if (*p != term) {
     return 0;
   }
   return (int)(p - str);

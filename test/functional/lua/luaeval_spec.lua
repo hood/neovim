@@ -620,6 +620,31 @@ describe('v:lua', function()
     eq(9004, eval("0 ? v:lua.require'bar'.doit() : v:lua.require'baz-quux'.doit()"))
   end)
 
+  it("calls require('pkg').func() without converting the package", function()
+    exec_lua(function()
+      package.loaded['vlua_pkg'] = {
+        co = coroutine.create(function() end), -- not convertible to Vimscript
+        f = function(...)
+          return table.concat({ ... }, ',')
+        end,
+      }
+      package.loaded['vlua_conv'] = {
+        key = 'val',
+        g = function()
+          return { h = 'H' }
+        end,
+      }
+    end)
+    eq('a,1', eval("v:lua.require('vlua_pkg').f('a', 1)"))
+    eq('2', eval('v:lua.require("vlua_pkg").f(2)'))
+    eq('x,3', eval("'x'->v:lua.require('vlua_pkg').f(3)"))
+    eq('4', eval("1 ? v:lua.require('vlua_pkg').f(4) : 0"))
+    -- Without a call after the literal argument, the result is converted.
+    eq('val', eval("v:lua.require('vlua_conv').key"))
+    eq('H', eval("v:lua.require('vlua_conv').g().h"))
+    eq('Vim:E5101: Cannot convert given Lua type', pcall_err(eval, "v:lua.require('vlua_pkg').co"))
+  end)
+
   it('fails for invalid usage', function()
     eq(
       [[Vim(let):E15: Invalid expression: "v:lua.func"]],
